@@ -48,7 +48,15 @@ export const AuthPage: React.FC = () => {
         if (password.length < 6) throw new Error('Password must be at least 6 characters long.');
         if (password !== confirmPassword) throw new Error('Passwords do not match.');
 
-        await register(email.trim(), password, fullName.trim());
+        const result = await register(email.trim(), password, fullName.trim());
+        if (result?.needsVerification) {
+          setSuccessMsg(
+            `Account successfully registered for ${email}! A confirmation email was sent. Please verify your email before signing in.`
+          );
+          setMode('login');
+          setPassword('');
+          setConfirmPassword('');
+        }
       } else if (mode === 'forgot') {
         if (!email.trim()) throw new Error('Please enter your registered email.');
         await CloudAuth.resetPassword(email.trim());

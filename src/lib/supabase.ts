@@ -5,20 +5,36 @@ export const STORAGE_KEY_URL = 'nexmoney_supabase_url';
 export const STORAGE_KEY_ANON = 'nexmoney_supabase_anon_key';
 export const STORAGE_KEY_MODE = 'nexmoney_cloud_mode'; // 'live' | 'simulation'
 
-// Retrieve environment credentials
-const envUrl = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-const envAnon = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+// Default project configuration provided for NEXMONEY
+export const DEFAULT_SUPABASE_URL = 'https://odzkkahthrptpqldchre.supabase.co';
+export const DEFAULT_SUPABASE_ANON = 'sb_publishable_XC-si0L325xVbrqE6Q4DQw_Pf9FKvrb';
+
+// Retrieve environment credentials safely across Vite and Node test environments
+const envUrl = (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_SUPABASE_URL as string) || '';
+const envAnon = (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_SUPABASE_ANON_KEY as string) || '';
 
 export function getStoredSupabaseConfig() {
-  const localUrl = localStorage.getItem(STORAGE_KEY_URL) || envUrl;
-  const localAnon = localStorage.getItem(STORAGE_KEY_ANON) || envAnon;
-  const mode = localStorage.getItem(STORAGE_KEY_MODE) || (localUrl && localAnon ? 'live' : 'simulation');
+  const rawLocalUrl = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY_URL) : null;
+  const rawLocalAnon = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY_ANON) : null;
+  
+  // Use stored custom credentials, env vars, or default project credentials
+  const localUrl = (rawLocalUrl && rawLocalUrl.trim() !== '' && !rawLocalUrl.includes('your-project'))
+    ? rawLocalUrl.trim()
+    : (envUrl || DEFAULT_SUPABASE_URL);
+
+  const localAnon = (rawLocalAnon && rawLocalAnon.trim() !== '' && !rawLocalAnon.includes('your-anon'))
+    ? rawLocalAnon.trim()
+    : (envAnon || DEFAULT_SUPABASE_ANON);
+
+  const rawMode = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY_MODE) : null;
+  const isConfigured = Boolean(localUrl && localAnon && localUrl.startsWith('https://'));
+  const mode = (rawMode as 'live' | 'simulation') || (isConfigured ? 'live' : 'simulation');
   
   return {
     url: localUrl,
     anonKey: localAnon,
-    isConfigured: Boolean(localUrl && localAnon && localUrl.startsWith('https://')),
-    mode: mode as 'live' | 'simulation',
+    isConfigured,
+    mode,
   };
 }
 

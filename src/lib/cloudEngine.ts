@@ -73,9 +73,17 @@ export const CloudAuth = {
     if (config.mode === 'live' && client) {
       try {
         const { data, error } = await client.auth.getSession();
-        if (error) throw error;
+        if (error) {
+          console.warn('Supabase getSession error:', error.message);
+          return null;
+        }
         if (data.session?.user) {
-          const user = data.session.user;
+          const { data: userData, error: userError } = await client.auth.getUser();
+          if (userError || !userData?.user) {
+            console.warn('Supabase active user validation note:', userError?.message);
+            return null;
+          }
+          const user = userData.user;
           return {
             id: user.id,
             email: user.email || '',
@@ -119,8 +127,10 @@ export const CloudAuth = {
       });
       if (error) throw error;
       
-      // Upsert profile in Supabase
-      if (data.user) {
+      const hasActiveSession = Boolean(data.session);
+
+      // Upsert profile in Supabase if session active
+      if (data.user && hasActiveSession) {
         try {
           await client.from('profiles').upsert({
             id: data.user.id,
@@ -128,7 +138,7 @@ export const CloudAuth = {
             full_name: fullName,
             currency: 'USD',
             created_at: new Date().toISOString(),
-          });
+          }, { onConflict: 'id' });
         } catch (profileErr) {
           console.warn('Profile upsert note:', profileErr);
         }
@@ -137,7 +147,8 @@ export const CloudAuth = {
         id: data.user?.id || '',
         email: data.user?.email || email,
         full_name: fullName,
-        needsVerification: !data.session,
+        hasActiveSession,
+        needsVerification: !hasActiveSession,
       };
     }
 
@@ -194,6 +205,27 @@ export const CloudAuth = {
         password,
       });
       if (error) throw error;
+      if (!data.session || !data.user) {
+        throw new Error('Supabase authentication succeeded but no session token was issued.');
+      }
+
+      // Upsert profile row upon login
+      try {
+        const resolvedName = data.user.user_metadata?.full_name || email.split('@')[0];
+        await client.from('profiles').upsert(
+          {
+            id: data.user.id,
+            email: data.user.email || email,
+            full_name: resolvedName,
+            currency: 'USD',
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'id' }
+        );
+      } catch (profileErr) {
+        console.warn('Profile sync on sign in note:', profileErr);
+      }
+
       return {
         id: data.user.id,
         email: data.user.email || email,
@@ -298,14 +330,31 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
-      const { data: { user: authUser } } = await client.auth.getUser();
-      const effectiveId = authUser?.id || userId;
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
       const { data, error } = await client
         .from('profiles')
         .select('*')
-        .eq('id', effectiveId)
-        .single();
-      if (!error && data) return data as UserProfile;
+        .eq('id', authenticatedUserId)
+        .maybeSingle();
+
+      if (data) return data as UserProfile;
+
+      // Auto-create initial profile row for verified user if missing
+      const { data: userData } = await client.auth.getUser();
+      const newProfile: UserProfile = {
+        id: authenticatedUserId,
+        email: userData?.user?.email || '',
+        full_name: userData?.user?.user_metadata?.full_name || userData?.user?.email?.split('@')[0] || 'User',
+        currency: 'USD',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      try {
+        await client.from('profiles').upsert(newProfile, { onConflict: 'id' });
+      } catch (err) {
+        console.warn('Profile auto-creation note:', err);
+      }
+      return newProfile;
     }
 
     const db = getSandboxDb(userId, '', '');
@@ -346,12 +395,11 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
-      const { data: { user: authUser } } = await client.auth.getUser();
-      const effectiveId = authUser?.id || userId;
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
       const { data, error } = await client
         .from('incomes')
         .select('*')
-        .eq('user_id', effectiveId)
+        .eq('user_id', authenticatedUserId)
         .order('date', { ascending: false });
       if (error) throw error;
       return (data || []) as Income[];
@@ -461,12 +509,11 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
-      const { data: { user: authUser } } = await client.auth.getUser();
-      const effectiveId = authUser?.id || userId;
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
       const { data, error } = await client
         .from('expenses')
         .select('*')
-        .eq('user_id', effectiveId)
+        .eq('user_id', authenticatedUserId)
         .order('date', { ascending: false });
       if (error) throw error;
       return (data || []) as Expense[];
@@ -570,9 +617,8 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
-      const { data: { user: authUser } } = await client.auth.getUser();
-      const effectiveId = authUser?.id || userId;
-      let query = client.from('budgets').select('*').eq('user_id', effectiveId);
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
+      let query = client.from('budgets').select('*').eq('user_id', authenticatedUserId);
       if (month) query = query.eq('month', month);
       const { data, error } = await query;
       if (error) throw error;
@@ -656,12 +702,11 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
-      const { data: { user: authUser } } = await client.auth.getUser();
-      const effectiveId = authUser?.id || userId;
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
       const { data, error } = await client
         .from('savings_goals')
         .select('*')
-        .eq('user_id', effectiveId)
+        .eq('user_id', authenticatedUserId)
         .order('created_at', { ascending: false });
       if (error) throw error;
       return (data || []) as SavingsGoal[];
@@ -762,12 +807,11 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
-      const { data: { user: authUser } } = await client.auth.getUser();
-      const effectiveId = authUser?.id || userId;
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
       const { data, error } = await client
         .from('documents')
         .select('*')
-        .eq('user_id', effectiveId)
+        .eq('user_id', authenticatedUserId)
         .order('upload_date', { ascending: false });
       if (error) throw error;
       return (data || []) as DocumentRecord[];
@@ -862,6 +906,7 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      await getVerifiedAuthUserId(client);
       const { data, error } = await client.storage
         .from(SUPABASE_DOCUMENTS_BUCKET)
         .download(doc.file_path);
@@ -914,11 +959,16 @@ Cloud Storage Bucket: ${SUPABASE_DOCUMENTS_BUCKET}
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
       // 1. Delete file from Supabase Storage
       await client.storage.from(SUPABASE_DOCUMENTS_BUCKET).remove([doc.file_path]);
 
       // 2. Delete metadata row
-      const { error } = await client.from('documents').delete().eq('id', doc.id).eq('user_id', userId);
+      const { error } = await client
+        .from('documents')
+        .delete()
+        .eq('id', doc.id)
+        .eq('user_id', authenticatedUserId);
       if (error) throw error;
       return true;
     }

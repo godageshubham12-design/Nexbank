@@ -9,13 +9,21 @@ export interface AuthUser {
   full_name: string;
 }
 
+export interface RegisterResult {
+  id: string;
+  email: string;
+  full_name: string;
+  hasActiveSession?: boolean;
+  needsVerification?: boolean;
+}
+
 interface AuthContextType {
   user: AuthUser | null;
   loading: boolean;
   cloudMode: 'live' | 'simulation';
   isConfigured: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, fullName: string) => Promise<void>;
+  register: (email: string, password: string, fullName: string) => Promise<RegisterResult>;
   logout: () => Promise<void>;
   switchDemoUser: (demoId: string) => Promise<void>;
   refreshSession: () => Promise<void>;
@@ -43,14 +51,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
-    refreshSession();
+    let isMounted = true;
+
+    async function initSession() {
+      setLoading(true);
+      try {
+        const sessionUser = await CloudAuth.getCurrentSession();
+        if (isMounted) {
+          setUser(sessionUser);
+        }
+      } catch (err) {
+        console.error('Initial session check failed:', err);
+        if (isMounted) setUser(null);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
+
+    initSession();
 
     // Listen to real Supabase auth state changes if configured
     let authSubscription: { unsubscribe: () => void } | null = null;
     const liveClient = getLiveSupabaseClient();
     if (liveClient) {
-      const { data } = liveClient.auth.onAuthStateChange((_event, session) => {
-        if (session?.user) {
+      const { data } = liveClient.auth.onAuthStateChange((event, session) => {
+        if (!isMounted) return;
+        if (event === 'SIGNED_OUT' || !session) {
+          if (getStoredSupabaseConfig().mode === 'live') {
+            setUser(null);
+          }
+        } else if (session?.user) {
           setUser({
             id: session.user.id,
             email: session.user.email || '',
@@ -59,8 +89,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               session.user.email?.split('@')[0] ||
               'User',
           });
-        } else if (getStoredSupabaseConfig().mode === 'live') {
-          setUser(null);
         }
       });
       authSubscription = data.subscription;
@@ -68,11 +96,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const handleConfigChange = () => {
       setConfig(getStoredSupabaseConfig());
-      refreshSession();
+      initSession();
     };
 
     window.addEventListener('nexmoney_config_changed', handleConfigChange);
     return () => {
+      isMounted = false;
       window.removeEventListener('nexmoney_config_changed', handleConfigChange);
       authSubscription?.unsubscribe();
     };
@@ -88,11 +117,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const register = async (email: string, password: string, fullName: string) => {
+  const register = async (
+    email: string,
+    password: string,
+    fullName: string
+  ): Promise<RegisterResult> => {
     setLoading(true);
     try {
-      const authUser = await CloudAuth.signUp(email, password, fullName);
-      setUser(authUser);
+      const result = await CloudAuth.signUp(email, password, fullName);
+      if (result.hasActiveSession) {
+        setUser({
+          id: result.id,
+          email: result.email,
+          full_name: result.full_name,
+        });
+      } else {
+        // Email confirmation is required; do NOT log in yet
+        setUser(null);
+      }
+      return result;
     } finally {
       setLoading(false);
     }
