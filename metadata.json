@@ -1,0 +1,6 @@
+{
+  "name": "NEXMONEY - Cloud Finance Management System",
+  "description": "Personal Finance Management System with Banking-grade UI, Cloud Database, Auth, Storage, and Row Level Security for College Cloud Computing CC-2.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
