@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 -- ==============================================================================
 CREATE TABLE IF NOT EXISTS public.incomes (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
   title TEXT NOT NULL CHECK (char_length(trim(title)) > 0),
   amount NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
   category TEXT NOT NULL CHECK (category IN ('Salary', 'Business', 'Freelancing', 'Investments', 'Interest', 'Rental', 'Gifts', 'Other')),
@@ -48,7 +48,7 @@ CREATE INDEX IF NOT EXISTS idx_incomes_date ON public.incomes(date);
 -- ==============================================================================
 CREATE TABLE IF NOT EXISTS public.expenses (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
   title TEXT NOT NULL CHECK (char_length(trim(title)) > 0),
   amount NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
   category TEXT NOT NULL CHECK (category IN ('Food', 'Shopping', 'Travel', 'Education', 'Bills', 'Health', 'Entertainment', 'Housing', 'Groceries', 'Other')),
@@ -68,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_expenses_date ON public.expenses(date);
 -- ==============================================================================
 CREATE TABLE IF NOT EXISTS public.budgets (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
   category TEXT NOT NULL CHECK (category IN ('Food', 'Shopping', 'Travel', 'Education', 'Bills', 'Health', 'Entertainment', 'Housing', 'Groceries', 'Other')),
   monthly_budget NUMERIC(12, 2) NOT NULL CHECK (monthly_budget > 0),
   month VARCHAR(7) NOT NULL, -- Format: YYYY-MM
@@ -85,7 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_budgets_user_month ON public.budgets(user_id, mon
 -- ==============================================================================
 CREATE TABLE IF NOT EXISTS public.savings_goals (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
   goal_name TEXT NOT NULL CHECK (char_length(trim(goal_name)) > 0),
   target_amount NUMERIC(12, 2) NOT NULL CHECK (target_amount > 0),
   current_saved NUMERIC(12, 2) DEFAULT 0 CHECK (current_saved >= 0),
@@ -105,7 +105,7 @@ CREATE INDEX IF NOT EXISTS idx_savings_goals_user_id ON public.savings_goals(use
 -- ==============================================================================
 CREATE TABLE IF NOT EXISTS public.documents (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
   file_name TEXT NOT NULL,
   file_path TEXT NOT NULL,
   file_size BIGINT NOT NULL,

@@ -23,6 +23,9 @@ export function getStoredSupabaseConfig() {
 }
 
 export function saveSupabaseConfig(url: string, anonKey: string, mode: 'live' | 'simulation') {
+  realClient = null;
+  currentCachedUrl = '';
+  currentCachedKey = '';
   localStorage.setItem(STORAGE_KEY_URL, url.trim());
   localStorage.setItem(STORAGE_KEY_ANON, anonKey.trim());
   localStorage.setItem(STORAGE_KEY_MODE, mode);
@@ -31,16 +34,21 @@ export function saveSupabaseConfig(url: string, anonKey: string, mode: 'live' | 
 
 // Global live client reference
 let realClient: SupabaseClient | null = null;
+let currentCachedUrl = '';
+let currentCachedKey = '';
 
 export function getLiveSupabaseClient(): SupabaseClient | null {
   const config = getStoredSupabaseConfig();
   if (config.isConfigured) {
-    if (!realClient) {
+    if (!realClient || currentCachedUrl !== config.url || currentCachedKey !== config.anonKey) {
       try {
+        currentCachedUrl = config.url;
+        currentCachedKey = config.anonKey;
         realClient = createClient(config.url, config.anonKey, {
           auth: {
             persistSession: true,
             autoRefreshToken: true,
+            detectSessionInUrl: true,
           },
         });
       } catch (err) {
@@ -50,6 +58,7 @@ export function getLiveSupabaseClient(): SupabaseClient | null {
     }
     return realClient;
   }
+  realClient = null;
   return null;
 }
 

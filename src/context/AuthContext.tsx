@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { CloudAuth } from '../lib/cloudEngine';
-import { getStoredSupabaseConfig, saveSupabaseConfig } from '../lib/supabase';
+import { getStoredSupabaseConfig, saveSupabaseConfig, getLiveSupabaseClient } from '../lib/supabase';
 import { DEMO_USERS } from '../lib/mockData';
 
 export interface AuthUser {
@@ -45,6 +45,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     refreshSession();
 
+    // Listen to real Supabase auth state changes if configured
+    let authSubscription: { unsubscribe: () => void } | null = null;
+    const liveClient = getLiveSupabaseClient();
+    if (liveClient) {
+      const { data } = liveClient.auth.onAuthStateChange((_event, session) => {
+        if (session?.user) {
+          setUser({
+            id: session.user.id,
+            email: session.user.email || '',
+            full_name:
+              session.user.user_metadata?.full_name ||
+              session.user.email?.split('@')[0] ||
+              'User',
+          });
+        } else if (getStoredSupabaseConfig().mode === 'live') {
+          setUser(null);
+        }
+      });
+      authSubscription = data.subscription;
+    }
+
     const handleConfigChange = () => {
       setConfig(getStoredSupabaseConfig());
       refreshSession();
@@ -53,6 +74,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     window.addEventListener('nexmoney_config_changed', handleConfigChange);
     return () => {
       window.removeEventListener('nexmoney_config_changed', handleConfigChange);
+      authSubscription?.unsubscribe();
     };
   }, []);
 
@@ -91,7 +113,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!target) return;
     setLoading(true);
     try {
-      // In sandbox mode, switch current user ID to demonstrate multi-tenant RLS isolation
+      // If currently in live mode, switch to simulation mode so sandbox ID isn't sent to live Supabase
+      if (config.mode === 'live') {
+        saveSupabaseConfig(config.url, config.anonKey, 'simulation');
+        setConfig(getStoredSupabaseConfig());
+      }
       localStorage.setItem('nexmoney_current_user_id', target.id);
       setUser({
         id: target.id,

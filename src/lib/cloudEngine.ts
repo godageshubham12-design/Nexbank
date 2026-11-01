@@ -74,7 +74,7 @@ export const CloudAuth = {
       try {
         const { data, error } = await client.auth.getSession();
         if (error) throw error;
-        if (data.session) {
+        if (data.session?.user) {
           const user = data.session.user;
           return {
             id: user.id,
@@ -82,12 +82,15 @@ export const CloudAuth = {
             full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'User',
           };
         }
+        // In live mode with no active Supabase session, do NOT fall back to sandbox user!
+        return null;
       } catch (err) {
-        console.warn('Supabase live session fetch failed, falling back:', err);
+        console.warn('Supabase live session fetch failed:', err);
+        return null;
       }
     }
 
-    // Cloud Sandbox session
+    // Cloud Sandbox session (only when in simulation mode)
     const currentUserId = localStorage.getItem('nexmoney_current_user_id');
     if (!currentUserId) return null;
     const users = getSandboxUsers();
@@ -267,6 +270,24 @@ export const CloudAuth = {
   },
 };
 
+// Helper to securely verify active Supabase Auth session and retrieve verified user ID
+async function getVerifiedAuthUserId(client: any): Promise<string> {
+  const { data: sessionData, error: sessionError } = await client.auth.getSession();
+  if (sessionError) {
+    throw new Error(`Supabase session error: ${sessionError.message}`);
+  }
+  if (!sessionData?.session) {
+    throw new Error('No active Supabase authentication session found. Please sign in to authenticate before performing cloud operations.');
+  }
+
+  const { data: userData, error: userError } = await client.auth.getUser();
+  if (userError || !userData?.user) {
+    throw new Error('Supabase authentication verification failed. Your session may be invalid or expired. Please sign in again.');
+  }
+
+  return userData.user.id;
+}
+
 // -------------------------------------------------------------
 // CLOUD DATABASE SERVICE (POSTGRESQL + RLS)
 // -------------------------------------------------------------
@@ -277,10 +298,12 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const { data: { user: authUser } } = await client.auth.getUser();
+      const effectiveId = authUser?.id || userId;
       const { data, error } = await client
         .from('profiles')
         .select('*')
-        .eq('id', userId)
+        .eq('id', effectiveId)
         .single();
       if (!error && data) return data as UserProfile;
     }
@@ -300,10 +323,11 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
       const { data, error } = await client
         .from('profiles')
         .update({ ...updates, updated_at: new Date().toISOString() })
-        .eq('id', userId)
+        .eq('id', authenticatedUserId)
         .select()
         .single();
       if (error) throw error;
@@ -322,10 +346,12 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const { data: { user: authUser } } = await client.auth.getUser();
+      const effectiveId = authUser?.id || userId;
       const { data, error } = await client
         .from('incomes')
         .select('*')
-        .eq('user_id', userId)
+        .eq('user_id', effectiveId)
         .order('date', { ascending: false });
       if (error) throw error;
       return (data || []) as Income[];
@@ -343,16 +369,28 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      // 1. Strictly verify the active Supabase session and get authenticated user ID
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
+
+      // 2. Perform INSERT query using the verified auth.uid()
       const { data, error } = await client
         .from('incomes')
         .insert({
-          ...income,
-          user_id: userId,
-          created_at: new Date().toISOString(),
+          title: income.title.trim(),
+          amount: income.amount,
+          category: income.category,
+          date: income.date,
+          payment_method: income.payment_method,
+          notes: income.notes ? income.notes.trim() : null,
+          user_id: authenticatedUserId,
         })
         .select()
         .single();
-      if (error) throw error;
+
+      if (error) {
+        console.error('Supabase income insert error:', error);
+        throw error;
+      }
       return data as Income;
     }
 
@@ -376,11 +414,12 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
       const { data, error } = await client
         .from('incomes')
         .update({ ...updates, updated_at: new Date().toISOString() })
         .eq('id', id)
-        .eq('user_id', userId) // Enforce RLS
+        .eq('user_id', authenticatedUserId) // Enforce RLS
         .select()
         .single();
       if (error) throw error;
@@ -400,11 +439,12 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
       const { error } = await client
         .from('incomes')
         .delete()
         .eq('id', id)
-        .eq('user_id', userId);
+        .eq('user_id', authenticatedUserId);
       if (error) throw error;
       return true;
     }
@@ -421,10 +461,12 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const { data: { user: authUser } } = await client.auth.getUser();
+      const effectiveId = authUser?.id || userId;
       const { data, error } = await client
         .from('expenses')
         .select('*')
-        .eq('user_id', userId)
+        .eq('user_id', effectiveId)
         .order('date', { ascending: false });
       if (error) throw error;
       return (data || []) as Expense[];
@@ -442,12 +484,18 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
+
       const { data, error } = await client
         .from('expenses')
         .insert({
-          ...expense,
-          user_id: userId,
-          created_at: new Date().toISOString(),
+          title: expense.title.trim(),
+          amount: expense.amount,
+          category: expense.category,
+          date: expense.date,
+          payment_method: expense.payment_method,
+          notes: expense.notes ? expense.notes.trim() : null,
+          user_id: authenticatedUserId,
         })
         .select()
         .single();
@@ -475,11 +523,12 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
       const { data, error } = await client
         .from('expenses')
         .update({ ...updates, updated_at: new Date().toISOString() })
         .eq('id', id)
-        .eq('user_id', userId)
+        .eq('user_id', authenticatedUserId)
         .select()
         .single();
       if (error) throw error;
@@ -499,11 +548,12 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
       const { error } = await client
         .from('expenses')
         .delete()
         .eq('id', id)
-        .eq('user_id', userId);
+        .eq('user_id', authenticatedUserId);
       if (error) throw error;
       return true;
     }
@@ -520,7 +570,9 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
-      let query = client.from('budgets').select('*').eq('user_id', userId);
+      const { data: { user: authUser } } = await client.auth.getUser();
+      const effectiveId = authUser?.id || userId;
+      let query = client.from('budgets').select('*').eq('user_id', effectiveId);
       if (month) query = query.eq('month', month);
       const { data, error } = await query;
       if (error) throw error;
@@ -540,12 +592,13 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
       const { data, error } = await client
         .from('budgets')
         .upsert(
           {
             ...budget,
-            user_id: userId,
+            user_id: authenticatedUserId,
             updated_at: new Date().toISOString(),
           },
           { onConflict: 'user_id,category,month' }
@@ -585,7 +638,8 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
-      const { error } = await client.from('budgets').delete().eq('id', id).eq('user_id', userId);
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
+      const { error } = await client.from('budgets').delete().eq('id', id).eq('user_id', authenticatedUserId);
       if (error) throw error;
       return true;
     }
@@ -602,10 +656,12 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const { data: { user: authUser } } = await client.auth.getUser();
+      const effectiveId = authUser?.id || userId;
       const { data, error } = await client
         .from('savings_goals')
         .select('*')
-        .eq('user_id', userId)
+        .eq('user_id', effectiveId)
         .order('created_at', { ascending: false });
       if (error) throw error;
       return (data || []) as SavingsGoal[];
@@ -623,11 +679,12 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
       const { data, error } = await client
         .from('savings_goals')
         .insert({
           ...goal,
-          user_id: userId,
+          user_id: authenticatedUserId,
           created_at: new Date().toISOString(),
         })
         .select()
@@ -656,11 +713,12 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
       const { data, error } = await client
         .from('savings_goals')
         .update({ ...updates, updated_at: new Date().toISOString() })
         .eq('id', id)
-        .eq('user_id', userId)
+        .eq('user_id', authenticatedUserId)
         .select()
         .single();
       if (error) throw error;
@@ -680,11 +738,12 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
       const { error } = await client
         .from('savings_goals')
         .delete()
         .eq('id', id)
-        .eq('user_id', userId);
+        .eq('user_id', authenticatedUserId);
       if (error) throw error;
       return true;
     }
@@ -703,10 +762,12 @@ export const CloudDatabase = {
     const config = getStoredSupabaseConfig();
 
     if (config.mode === 'live' && client) {
+      const { data: { user: authUser } } = await client.auth.getUser();
+      const effectiveId = authUser?.id || userId;
       const { data, error } = await client
         .from('documents')
         .select('*')
-        .eq('user_id', userId)
+        .eq('user_id', effectiveId)
         .order('upload_date', { ascending: false });
       if (error) throw error;
       return (data || []) as DocumentRecord[];
@@ -726,10 +787,12 @@ export const CloudDatabase = {
 
     const client = getLiveSupabaseClient();
     const config = getStoredSupabaseConfig();
-    const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const filePath = `${userId}/${Date.now()}_${sanitizedName}`;
 
     if (config.mode === 'live' && client) {
+      const authenticatedUserId = await getVerifiedAuthUserId(client);
+      const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const filePath = `${authenticatedUserId}/${Date.now()}_${sanitizedName}`;
+
       // 1. Upload to Supabase Storage Bucket
       const { error: uploadError } = await client.storage
         .from(SUPABASE_DOCUMENTS_BUCKET)
@@ -743,7 +806,7 @@ export const CloudDatabase = {
       const { data, error: dbError } = await client
         .from('documents')
         .insert({
-          user_id: userId,
+          user_id: authenticatedUserId,
           file_name: file.name,
           file_path: filePath,
           file_size: file.size,
@@ -759,6 +822,9 @@ export const CloudDatabase = {
 
     // Cloud Sandbox simulated upload
     // Store file in IndexedDB or base64 representation for simulated download
+    const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const sandboxFilePath = `${userId}/${Date.now()}_${sanitizedName}`;
+
     const fileReader = new FileReader();
     const base64Promise = new Promise<string>((resolve) => {
       fileReader.onload = () => resolve(fileReader.result as string);
@@ -766,7 +832,7 @@ export const CloudDatabase = {
     });
     const base64Content = await base64Promise;
 
-    const fileStorageKey = `${SANDBOX_FILES_KEY_PREFIX}${filePath}`;
+    const fileStorageKey = `${SANDBOX_FILES_KEY_PREFIX}${sandboxFilePath}`;
     try {
       localStorage.setItem(fileStorageKey, base64Content);
     } catch {
@@ -778,7 +844,7 @@ export const CloudDatabase = {
       id: `doc-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       user_id: userId,
       file_name: file.name,
-      file_path: filePath,
+      file_path: sandboxFilePath,
       file_size: file.size,
       file_type: file.type || 'application/octet-stream',
       category,
